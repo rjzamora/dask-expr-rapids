@@ -23,7 +23,7 @@ from dask_expr import (
     to_numeric,
     to_timedelta,
 )
-from dask_expr._expr import are_co_aligned
+from dask_expr._expr import Tuple, are_co_aligned
 from dask_expr._reductions import Len
 from dask_expr._shuffle import Shuffle
 from dask_expr.datasets import timeseries
@@ -1906,6 +1906,18 @@ def test_items(df, pdf):
     for (expect_name, expect_col), (actual_name, actual_col) in zip(expect, actual):
         assert expect_name == actual_name
         assert_eq(expect_col, actual_col)
+
+
+def test_combine_expr_with_tuple(pdf):
+    ddf1 = from_pandas(pdf, npartitions=2) + 1
+    ddf2 = from_pandas(pdf, npartitions=3) + 2
+
+    t = Tuple(ddf1.expr, ddf2.expr)
+    assert t[0]._name == ddf1._name
+    assert t[0].optimize()._name == t.optimize()[0]._name
+
+    assert t[1]._name == ddf2._name
+    assert t[1].optimize()._name == t.optimize()[1]._name
 
 
 def test_index_index(df):

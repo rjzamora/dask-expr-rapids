@@ -196,6 +196,9 @@ class FrameBase(DaskMethodsMixin):
     )
     __dask_optimize__ = staticmethod(lambda dsk, keys, **kwargs: dsk)
 
+    def __dask_tokenize__(self):
+        return self.expr._name
+
     def __init__(self, expr):
         self._expr = expr
 
@@ -265,14 +268,7 @@ class FrameBase(DaskMethodsMixin):
         return DaskMethodsMixin.compute(out, **kwargs)
 
     def __dask_graph__(self):
-        out = self.expr
-        out = out.lower_completely()
-        return out.__dask_graph__()
-
-    def __dask_keys__(self):
-        out = self.expr
-        out = out.lower_completely()
-        return out.__dask_keys__()
+        return self.expr
 
     def simplify(self):
         return new_collection(self.expr.simplify())
@@ -286,6 +282,9 @@ class FrameBase(DaskMethodsMixin):
     @property
     def dask(self):
         return self.__dask_graph__()
+
+    def finalize_compute(self):
+        return new_collection(Repartition(self.expr, 1))
 
     def __dask_postcompute__(self):
         state = new_collection(self.expr.lower_completely())
