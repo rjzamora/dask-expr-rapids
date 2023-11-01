@@ -132,6 +132,10 @@ class ToParquetData(Blockwise):
             self.write_kwargs,
         )
 
+    @property
+    def _meta(self):
+        return None
+
     def _divisions(self):
         return (None,) * (self.frame.npartitions + 1)
 

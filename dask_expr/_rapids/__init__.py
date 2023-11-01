@@ -25,10 +25,12 @@ try:
     import dask_expr._rapids._collection
     import dask_expr._rapids._expr
 
+    backend = config.get("dataframe.backend", "cudf")
+    shuffle_method = config.get("dataframe.shuffle.method", "tasks")
     config.set(
         {
-            "dataframe.backend": "cudf",
-            "dataframe.shuffle.method": "tasks",
+            "dataframe.backend": backend,
+            "dataframe.shuffle.method": shuffle_method,
         }
     )
 except ImportError:

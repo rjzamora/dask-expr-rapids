@@ -249,5 +249,5 @@ def test_merge_combine_similar_squash_merges(add_repartition):
 
     lib.testing.assert_frame_equal(
         out.reset_index(drop=True),
-        expected,
+        expected.reset_index(drop=True),
     )
