@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dask-expr"
-description = "High Level Expressions for Dask "
-maintainers = [{name = "Matthew Rocklin", email = "mrocklin@gmail.com"}]
+description = "High Level Expressions for Dask + RAPIDS"
+maintainers = [{name = "Rick Zamora", email = "rzamora217@gmail.com"}]
 license = {text = "BSD"}
-keywords = ["dask pandas"]
+keywords = ["dask cudf"]
 classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
@@ -26,14 +26,14 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "dask >= 2023.10.1",
-    "pyarrow",
-    "pandas >= 2",
+    "pyarrow==13.*",
+    "pandas>=1.3,<1.6.0dev0",
 ]
 
 dynamic = ["version"]
 
 [project.urls]
-"Source code" = "https://github.com/dask-contrib/dask-expr/"
+"Source code" = "https://github.com/rjzamora/dask-expr-rapids/"
 
 [tool.setuptools.packages.find]
 exclude = ["*tests*"]
