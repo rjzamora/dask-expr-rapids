@@ -1,8 +1,8 @@
 import cudf
 
-from dask_expr._expr import Expr
+from dask_expr._expr import Expr as BaseExpr
 
 
-@Expr.register_dispatch(cudf.DataFrame)
-class RapidsExpr(Expr):
+@BaseExpr.register_dispatch(cudf.DataFrame)
+class RapidsExpr(BaseExpr):
     pass
