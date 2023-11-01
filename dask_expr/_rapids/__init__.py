@@ -9,7 +9,6 @@ from dask_expr._rapids._dispatching import (
 )
 
 # Monkey-patch type-based dispatching
-
 FrameBase.register_dispatch = classmethod(register_dispatch)
 FrameBase.__new__ = override_new_collection
 
@@ -17,20 +16,17 @@ Expr.register_dispatch = classmethod(register_dispatch)
 Expr.__new__ = override_new_expr
 
 
-# Configure for RAPIDS
-# TODO: Are there cases where we want to avoid this?
 try:
-    import dask_cudf
-
+    # Configure for RAPIDS
+    # TODO: Are there cases where we want to avoid this?
     import dask_expr._rapids._collection
     import dask_expr._rapids._expr
 
-    backend = config.get("dataframe.backend", "cudf")
-    shuffle_method = config.get("dataframe.shuffle.method", "tasks")
+    shuffle_default = config.get("dataframe.shuffle.method", "tasks")
     config.set(
         {
-            "dataframe.backend": backend,
-            "dataframe.shuffle.method": shuffle_method,
+            "dataframe.backend": "cudf",
+            "dataframe.shuffle.method": shuffle_default,
         }
     )
 except ImportError:
