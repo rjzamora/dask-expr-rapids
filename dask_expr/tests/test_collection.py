@@ -13,6 +13,7 @@ from dask.utils import M
 from dask_expr import expr, from_pandas, is_scalar, optimize
 from dask_expr._expr import are_co_aligned
 from dask_expr._reductions import Len
+from dask_expr._shuffle import Shuffle
 from dask_expr.datasets import timeseries
 from dask_expr.tests._util import _backend_library, assert_eq, xfail_gpu
 
@@ -49,6 +50,11 @@ def test_setitem(pdf, df):
 
     assert "z" in df.columns
     assert_eq(df, pdf)
+
+
+def test_series_product(pdf, df):
+    assert_eq(pdf.x.product(), df.x.product())
+    assert_eq(pdf.y.product(), df.y.product())
 
 
 @xfail_gpu("https://github.com/rapidsai/cudf/issues/10271")
@@ -135,6 +141,12 @@ def test_reductions(func, pdf, df):
     # check_dtype False because sub-selection of columns that is pushed through
     # is not reflected in the meta calculation
     assert_eq(func(df)["x"], func(pdf)["x"], check_dtype=False)
+
+
+def test_reduction_on_empty_df():
+    pdf = lib.DataFrame()
+    df = from_pandas(pdf)
+    assert_eq(df.sum(), pdf.sum())
 
 
 @pytest.mark.parametrize("axis", [0, 1])
@@ -318,15 +330,23 @@ def test_to_timestamp(pdf, how):
         lambda df: df.rename(columns={"x": "xx"})[["xx"]],
         lambda df: df.x.to_frame(),
         lambda df: df.drop(columns="x"),
+        lambda df: df.drop(axis=1, labels=["x"]),
         lambda df: df.x.index.to_frame(),
         lambda df: df.eval("z=x+y"),
         lambda df: df.select_dtypes(include="integer"),
         lambda df: df.add_prefix(prefix="2_"),
         lambda df: df.add_suffix(suffix="_2"),
+        lambda df: df.query("x > 10"),
     ],
 )
 def test_blockwise(func, pdf, df):
     assert_eq(func(pdf), func(df))
+
+
+def test_drop_not_implemented(pdf, df):
+    msg = "Drop currently only works for axis=1 or when columns is not None"
+    with pytest.raises(NotImplementedError, match=msg):
+        df.drop(axis=0, labels=[0])
 
 
 @xfail_gpu("func not supported by cudf")
@@ -910,6 +930,16 @@ def test_drop_duplicates(df, pdf, split_out):
         df.x.drop_duplicates(subset=["a"], split_out=split_out)
 
 
+def test_drop_duplicates_split_out(df, pdf):
+    q = df.drop_duplicates(subset=["x"])
+    assert len(list(q.optimize().find_operations(Shuffle))) > 0
+    assert_eq(q, pdf.drop_duplicates(subset=["x"]))
+
+    q = df.x.drop_duplicates()
+    assert len(list(q.optimize().find_operations(Shuffle))) > 0
+    assert_eq(q, pdf.x.drop_duplicates())
+
+
 def test_unique(df, pdf):
     with pytest.raises(
         AttributeError, match="'DataFrame' object has no attribute 'unique'"
@@ -992,6 +1022,11 @@ def test_simplify_up_blockwise(df, pdf, func, args, indexer):
     result = q.simplify()
     expected = getattr(df.simplify(), func)(*args)
     assert result._name == expected._name
+
+
+def test_isin_as_predicate(df, pdf):
+    result = df[df.x.isin([10])]
+    assert_eq(result, pdf[pdf.x.isin([10])])
 
 
 def test_sample(df):
@@ -1120,6 +1155,18 @@ def test_are_co_aligned(pdf, df):
     merged_second = merged.rename(columns={"x": "a"})
     assert are_co_aligned(merged_first.expr, merged_second.expr)
     assert not are_co_aligned(merged_first.expr, df.expr)
+
+
+def test_assign_different_roots():
+    pdf = lib.DataFrame(
+        list(range(100)), index=list(range(1000, 0, -10)), columns=["x"]
+    )
+    pdf2 = lib.DataFrame(list(range(100)), index=list(range(100, 0, -1)), columns=["x"])
+    df = from_pandas(pdf, npartitions=10, sort=False)
+    df2 = from_pandas(pdf2, npartitions=10, sort=False)
+
+    with pytest.raises(NotImplementedError, match="different base"):
+        df["new"] = df2.x
 
 
 @xfail_gpu()
@@ -1275,3 +1322,65 @@ def test_replace_filtered_combine_similar():
     # Filter expressions (and not the other way around)
     similar = list(df.find_operations(Replace))
     assert all(isinstance(op.frame, Filter) for op in similar)
+
+
+def test_map_overlap():
+    def func(x):
+        x = x + x.sum()
+        return x
+
+    idx = lib.date_range("2020-01-01", periods=5, freq="D")
+    pdf = lib.DataFrame(1, index=idx, columns=["a"])
+    df = from_pandas(pdf, npartitions=2)
+
+    result = df.map_overlap(func, before=0, after="2D")
+    expected = lib.DataFrame([5, 5, 5, 3, 3], index=idx, columns=["a"])
+    assert_eq(result, expected)
+    result = df.map_overlap(func, before=0, after=1)
+    assert_eq(result, expected)
+
+    # Bug in dask/dask
+    # result = df.map_overlap(func, before=0, after="1D")
+    # expected = lib.DataFrame([4, 4, 4, 3, 3], index=idx, columns=["a"])
+    # assert_eq(result, expected)
+
+    result = df.map_overlap(func, before="2D", after=0)
+    expected = lib.DataFrame(4, index=idx, columns=["a"])
+    assert_eq(result, expected, check_index=False)
+
+    result = df.map_overlap(func, before=1, after=0)
+    assert_eq(result, expected, check_index=False)
+
+
+def test_map_overlap_raises():
+    def func(x):
+        x = x + x.sum()
+        return x
+
+    idx = lib.date_range("2020-01-01", periods=5, freq="D")
+    pdf = lib.DataFrame(1, index=idx, columns=["a"])
+    df = from_pandas(pdf, npartitions=2)
+
+    with pytest.raises(NotImplementedError, match="is less than"):
+        df.map_overlap(func, before=5, after=0).compute()
+
+    with pytest.raises(NotImplementedError, match="is less than"):
+        df.map_overlap(func, before=0, after=5).compute()
+
+    with pytest.raises(NotImplementedError, match="is less than"):
+        df.map_overlap(func, before="5D", after=0).compute()
+
+    with pytest.raises(NotImplementedError, match="is less than"):
+        df.map_overlap(func, before=0, after="5D").compute()
+
+    with pytest.raises(ValueError, match="positive"):
+        df.map_overlap(func, before=-1, after=5).compute()
+
+    with pytest.raises(ValueError, match="positive"):
+        df.map_overlap(func, before=1, after=-5).compute()
+
+
+def test_dtype(df, pdf):
+    assert df.x.dtype == pdf.x.dtype
+    assert df.index.dtype == pdf.index.dtype
+    assert_eq(df.dtypes, pdf.dtypes)
