@@ -4,7 +4,7 @@ import functools
 import inspect
 import warnings
 from collections.abc import Callable, Hashable, Mapping
-from numbers import Number
+from numbers import Integral, Number
 from typing import Any, Literal
 
 import numpy as np
@@ -32,11 +32,23 @@ from dask_expr._align import AlignPartitions
 from dask_expr._categorical import CategoricalAccessor
 from dask_expr._concat import Concat
 from dask_expr._datetime import DatetimeAccessor
-from dask_expr._expr import Eval, Query, no_default
+from dask_expr._expr import (
+    BFill,
+    Eval,
+    FFill,
+    Query,
+    Shift,
+    ToDatetime,
+    ToNumeric,
+    ToTimedelta,
+    no_default,
+)
 from dask_expr._merge import JoinRecursive, Merge
 from dask_expr._quantiles import RepartitionQuantiles
 from dask_expr._reductions import (
     DropDuplicates,
+    IsMonotonicDecreasing,
+    IsMonotonicIncreasing,
     Len,
     MemoryUsageFrame,
     MemoryUsageIndex,
@@ -152,6 +164,8 @@ class FrameBase(DaskMethodsMixin):
     def __getitem__(self, other):
         if isinstance(other, FrameBase):
             return new_collection(self.expr.__getitem__(other.expr))
+        elif isinstance(other, slice):
+            return self.loc[other]
         return new_collection(self.expr.__getitem__(other))
 
     def persist(self, fuse=True, combine_similar=True, **kwargs):
@@ -249,6 +263,24 @@ class FrameBase(DaskMethodsMixin):
         """Return a copy of this object"""
         return new_collection(self.expr)
 
+    def eq(self, other):
+        return self.__eq__(other)
+
+    def ne(self, other):
+        return self.__ne__(other)
+
+    def gt(self, other):
+        return self.__gt__(other)
+
+    def ge(self, other):
+        return self.__ge__(other)
+
+    def lt(self, other):
+        return self.__lt__(other)
+
+    def le(self, other):
+        return self.__le__(other)
+
     def isin(self, values):
         if isinstance(self, DataFrame):
             # DataFrame.isin does weird alignment stuff
@@ -306,6 +338,9 @@ class FrameBase(DaskMethodsMixin):
         """
         return IndexCallable(self._partitions)
 
+    def get_partition(self, n):
+        return self.partitions[n]
+
     def shuffle(
         self,
         index: str | list,
@@ -347,16 +382,6 @@ class FrameBase(DaskMethodsMixin):
             )
         )
 
-    def groupby(self, by, **kwargs):
-        from dask_expr._groupby import GroupBy
-
-        if isinstance(by, FrameBase) and not isinstance(by, Series):
-            raise ValueError(
-                f"`by` must be a column name or list of columns, got {by}."
-            )
-
-        return GroupBy(self, by, **kwargs)
-
     def resample(self, rule, **kwargs):
         from dask_expr._resample import Resampler
 
@@ -390,7 +415,7 @@ class FrameBase(DaskMethodsMixin):
             DataFrame-like args (both dask and pandas) must have the same
             number of partitions as ``self` or comprise a single partition.
             Key-word arguments, Single-partition arguments, and general
-            python-object argments will be broadcasted to all partitions.
+            python-object arguments will be broadcasted to all partitions.
         enforce_metadata : bool, default True
             Whether to enforce at runtime that the structure of the DataFrame
             produced by ``func`` actually matches the structure of ``meta``.
@@ -581,8 +606,18 @@ class FrameBase(DaskMethodsMixin):
     def isnull(self):
         return new_collection(self.expr.isnull())
 
+    def mask(self, cond, other=np.nan):
+        cond = cond.expr if isinstance(cond, FrameBase) else cond
+        other = other.expr if isinstance(other, FrameBase) else other
+        return new_collection(self.expr.mask(cond, other))
+
     def round(self, decimals=0):
         return new_collection(self.expr.round(decimals))
+
+    def where(self, cond, other=np.nan):
+        cond = cond.expr if isinstance(cond, FrameBase) else cond
+        other = other.expr if isinstance(other, FrameBase) else other
+        return new_collection(self.expr.where(cond, other))
 
     def apply(self, function, *args, **kwargs):
         return new_collection(self.expr.apply(function, *args, **kwargs))
@@ -590,8 +625,30 @@ class FrameBase(DaskMethodsMixin):
     def replace(self, to_replace=None, value=no_default, regex=False):
         return new_collection(self.expr.replace(to_replace, value, regex))
 
+    def ffill(self, axis=0, _inplace=False, limit=None, _downcast=None):
+        axis = _validate_axis(axis)
+        if axis == 1:
+            raise NotImplementedError("ffill on axis 1 not implemented")
+        return new_collection(FFill(self.expr, limit))
+
+    def bfill(self, axis=0, _inplace=False, limit=None, _downcast=None):
+        axis = _validate_axis(axis)
+        if axis == 1:
+            raise NotImplementedError("bfill on axis 1 not implemented")
+        return new_collection(BFill(self.expr, limit))
+
     def fillna(self, value=None):
         return new_collection(self.expr.fillna(value))
+
+    def shift(self, periods=1, freq=None, axis=0):
+        if not isinstance(periods, Integral):
+            raise TypeError("periods must be an integer")
+
+        axis = _validate_axis(axis)
+        if axis == 1:
+            raise NotImplementedError("shift on axis 1 not supported yet")
+
+        return new_collection(Shift(self.expr, periods, freq))
 
     def rename_axis(
         self, mapper=no_default, index=no_default, columns=no_default, axis=0
@@ -603,6 +660,21 @@ class FrameBase(DaskMethodsMixin):
 
     def nunique_approx(self):
         return new_collection(self.expr.nunique_approx())
+
+    def memory_usage_per_partition(self, index=True, deep=False):
+        return new_collection(self.expr.memory_usage_per_partition(index, deep))
+
+    @property
+    def loc(self):
+        from dask_expr._indexing import LocIndexer
+
+        return LocIndexer(self)
+
+    def notnull(self):
+        return new_collection(expr.NotNull(self.expr))
+
+    def isnull(self):
+        return ~self.notnull()
 
 
 # Add operator attributes
@@ -649,6 +721,16 @@ class DataFrame(FrameBase):
     def shape(self):
         return self.size / len(self.columns), len(self.columns)
 
+    def keys(self):
+        return self.columns
+
+    def __iter__(self):
+        return iter(self.columns)
+
+    def items(self):
+        for i, name in enumerate(self.columns):
+            yield (name, self.iloc[:, i])
+
     def assign(self, **pairs):
         result = self
         data = self.copy()
@@ -687,6 +769,7 @@ class DataFrame(FrameBase):
         indicator=False,
         shuffle_backend=None,
         npartitions=None,
+        broadcast=None,
     ):
         """Merge the DataFrame with another DataFrame
 
@@ -726,6 +809,13 @@ class DataFrame(FrameBase):
             Shuffle backend to use if shuffling is necessary.
         npartitions : int, optional
             The number of output partitions
+        broadcast : float, bool, optional
+            Whether to use a broadcast-based join in lieu of a shuffle-based join for
+            supported cases. By default, a simple heuristic will be used to select
+            the underlying algorithm. If a floating-point value is specified, that
+            number will be used as the broadcast_bias within the simple heuristic
+            (a large number makes Dask more likely to choose the broacast_join code
+            path). See broadcast_join for more information.
         """
         return merge(
             self,
@@ -740,6 +830,7 @@ class DataFrame(FrameBase):
             indicator,
             shuffle_backend,
             npartitions=npartitions,
+            broadcast=broadcast,
         )
 
     def join(
@@ -780,6 +871,26 @@ class DataFrame(FrameBase):
             suffixes=(lsuffix, rsuffix),
             shuffle_backend=shuffle_backend,
             npartitions=npartitions,
+        )
+
+    def groupby(
+        self, by, group_keys=None, sort=None, observed=None, dropna=None, **kwargs
+    ):
+        from dask_expr._groupby import GroupBy
+
+        if isinstance(by, FrameBase) and not isinstance(by, Series):
+            raise ValueError(
+                f"`by` must be a column name or list of columns, got {by}."
+            )
+
+        return GroupBy(
+            self,
+            by,
+            group_keys=group_keys,
+            sort=sort,
+            observed=observed,
+            dropna=dropna,
+            **kwargs,
         )
 
     def __setitem__(self, key, value):
@@ -1029,6 +1140,19 @@ class DataFrame(FrameBase):
 
         return ILocIndexer(self)
 
+    def nunique(self, axis=0, dropna=True):
+        if axis == 1:
+            return new_collection(
+                expr.NUniqueColumns(self.expr, axis=axis, dropna=dropna)
+            )
+        else:
+            return concat(
+                [
+                    col.nunique(dropna=dropna).to_series(name)
+                    for name, col in self.items()
+                ]
+            )
+
 
 class Series(FrameBase):
     """Series-like Expr Collection"""
@@ -1054,6 +1178,9 @@ class Series(FrameBase):
     @property
     def nbytes(self):
         return new_collection(self.expr.nbytes)
+
+    def keys(self):
+        return self.index
 
     def map(self, arg, na_action=None):
         return new_collection(expr.Map(self.expr, arg=arg, na_action=na_action))
@@ -1084,6 +1211,16 @@ class Series(FrameBase):
     def unique(self):
         return new_collection(Unique(self.expr))
 
+    def nunique(self, dropna=True):
+        uniqs = self.drop_duplicates()
+        if dropna:
+            # count mimics pandas behavior and excludes NA values
+            if isinstance(uniqs, Index):
+                uniqs = uniqs.to_series()
+            return uniqs.count()
+        else:
+            return uniqs.size
+
     def drop_duplicates(self, ignore_index=False, split_out=True):
         return new_collection(
             DropDuplicates(self.expr, ignore_index=ignore_index, split_out=split_out)
@@ -1109,12 +1246,35 @@ class Series(FrameBase):
             RepartitionQuantiles(self.expr, npartitions, upsample, random_state)
         )
 
+    def groupby(self, by, **kwargs):
+        from dask_expr._groupby import SeriesGroupBy
+
+        return SeriesGroupBy(self, by, **kwargs)
+
+    def rename(self, index):
+        if is_scalar(index) or isinstance(index, tuple):
+            return new_collection(expr.RenameSeries(self.expr, index))
+        raise NotImplementedError(f"passing index={type(index)} is not supported")
+
+    @property
+    def is_monotonic_increasing(self):
+        return new_collection(IsMonotonicIncreasing(self.expr))
+
+    @property
+    def is_monotonic_decreasing(self):
+        return new_collection(IsMonotonicDecreasing(self.expr))
+
 
 class Index(Series):
     """Index-like Expr Collection"""
 
     def __repr__(self):
         return f"<dask_expr.expr.Index: expr={self.expr}>"
+
+    def to_series(self, index=None, name=no_default):
+        if index is not None:
+            raise NotImplementedError
+        return new_collection(expr.ToSeriesIndex(self.expr, index=index, name=name))
 
     def to_frame(self, index=True, name=no_default):
         if not index:
@@ -1139,6 +1299,9 @@ class Scalar(FrameBase):
 
     def __dask_postcompute__(self):
         return first, ()
+
+    def to_series(self, index=0) -> Series:
+        return new_collection(expr.ScalarToSeries(self.expr, index=index))
 
 
 def new_collection(expr):
@@ -1296,6 +1459,7 @@ def merge(
     indicator=False,
     shuffle_backend=None,
     npartitions=None,
+    broadcast=None,
 ):
     for o in [on, left_on, right_on]:
         if isinstance(o, FrameBase):
@@ -1347,6 +1511,7 @@ def merge(
             indicator=indicator,
             shuffle_backend=shuffle_backend,
             _npartitions=npartitions,
+            broadcast=broadcast,
         )
     )
 
@@ -1455,3 +1620,21 @@ def pivot_table(df, index, columns, values, aggfunc="mean"):
             df.expr, index=index, columns=columns, values=values, aggfunc=aggfunc
         )
     )
+
+
+def to_numeric(arg, errors="raise", downcast=None):
+    if not isinstance(arg, Series):
+        raise TypeError("arg must be a Series")
+    return new_collection(ToNumeric(frame=arg.expr, errors=errors, downcast=downcast))
+
+
+def to_datetime(arg, **kwargs):
+    if not isinstance(arg, FrameBase):
+        raise TypeError("arg must be a Series or a DataFrame")
+    return new_collection(ToDatetime(frame=arg.expr, kwargs=kwargs))
+
+
+def to_timedelta(arg, unit=None, errors="raise"):
+    if not isinstance(arg, Series):
+        raise TypeError("arg must be a Series")
+    return new_collection(ToTimedelta(frame=arg.expr, unit=unit, errors=errors))
