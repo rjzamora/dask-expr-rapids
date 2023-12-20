@@ -186,9 +186,10 @@ def _wrap_unary_expr_op(self, op=None):
 #
 # Collection classes
 #
+from dask.typing import DaskCollection2
 
 
-class FrameBase(DaskMethodsMixin):
+class FrameBase(DaskMethodsMixin, DaskCollection2):
     """Base class for Expr-backed Collections"""
 
     __dask_scheduler__ = staticmethod(
@@ -267,7 +268,7 @@ class FrameBase(DaskMethodsMixin):
         out = out.optimize(fuse=fuse)
         return DaskMethodsMixin.compute(out, **kwargs)
 
-    def __dask_graph__(self):
+    def __dask_graph_factory__(self):
         return self.expr
 
     def simplify(self):
@@ -281,10 +282,18 @@ class FrameBase(DaskMethodsMixin):
 
     @property
     def dask(self):
-        return self.__dask_graph__()
+        # FIXME: This is highly problematic. Defining this as a property can
+        # cause very unfortunate materializations. Even a mere hasattr(obj,
+        # "dask") check already triggers this since it's a property, not even a
+        # method.
+        return self.__dask_graph_factory__().optimize().materialize()
 
     def finalize_compute(self):
         return new_collection(Repartition(self.expr, 1))
+
+    def postpersist(self, futures):
+        func, args = self.__dask_postpersist__()
+        return func(futures, *args)
 
     def __dask_postcompute__(self):
         state = new_collection(self.expr.lower_completely())
@@ -1808,7 +1817,9 @@ class Scalar(FrameBase):
             "a conditional statement."
         )
 
-    def __dask_postcompute__(self):
+    def finalize_compute(self):
+        return self
+
         return first, ()
 
     def to_series(self, index=0) -> Series:

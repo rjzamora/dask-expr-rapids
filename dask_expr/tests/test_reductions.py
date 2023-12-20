@@ -106,9 +106,9 @@ def test_reductions_split_every_split_out(pdf, df, split_every, reduction):
     )
     q = getattr(df.x, reduction)(split_every=split_every).optimize(fuse=False)
     if split_every is False:
-        assert len(q.__dask_graph__()) == 32
+        assert len(q.dask) == 32
     else:
-        assert len(q.__dask_graph__()) == 34
+        assert len(q.dask) == 34
     assert_eq(
         getattr(df, reduction)(split_every=split_every),
         getattr(pdf, reduction)(),

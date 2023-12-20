@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 import dask
 import numpy as np
 import pandas as pd
+import toolz
 from dask.base import normalize_token
 from dask.core import flatten
 from dask.dataframe import methods
@@ -56,9 +57,6 @@ class Expr(core.Expr):
         except AttributeError:
             return 0
 
-    def __dask_keys__(self):
-        return [(self._name, i) for i in range(self.npartitions)]
-
     def optimize(self, **kwargs):
         return optimize(self, **kwargs)
 
@@ -93,6 +91,10 @@ class Expr(core.Expr):
                 "This often means that you are attempting to use an unsupported "
                 f"API function. Current API coverage is documented here: {link}."
             )
+
+    @classmethod
+    def combine_factories(cls, *exprs: Expr, **kwargs) -> Expr:
+        return Tuple(*exprs)
 
     @property
     def index(self):
@@ -347,6 +349,7 @@ class Expr(core.Expr):
 
     @functools.cached_property
     def divisions(self):
+        # Note: This is triggering a divisions calculation on an hasattr check!
         return tuple(self._divisions())
 
     def _divisions(self):
@@ -391,27 +394,6 @@ class Expr(core.Expr):
     @property
     def _meta(self):
         raise NotImplementedError()
-
-    def materialize(self):
-        """Traverse expression tree, collect layers"""
-        stack = [self]
-        seen = set()
-        layers = []
-        while stack:
-            expr = stack.pop()
-
-            if expr._name in seen:
-                continue
-            seen.add(expr._name)
-
-            layers.append(expr._layer())
-            for operand in expr.dependencies():
-                stack.append(operand)
-
-        return toolz.merge(layers)
-
-    def __dask_keys__(self):
-        return [(self._name, i) for i in range(self.npartitions)]
 
     def substitute(self, old, new) -> Expr:
         """Substitute a specific term within the expression
@@ -2118,17 +2100,6 @@ class Pos(Unaryop):
     _operator_repr = "+"
 
 
-class Tuple(Expr):
-    def __getitem__(self, other):
-        return self.operands[other]
-
-    def __len__(self):
-        return len(self.operands)
-
-    def __iter__(self):
-        return iter(self.operands)
-
-
 class Partitions(Expr):
     """Select one or more partitions"""
 
@@ -2749,3 +2720,20 @@ from dask_expr._reductions import (
     Var,
 )
 from dask_expr.io import IO, BlockwiseIO
+
+
+class Tuple(Expr):
+    def __getitem__(self, other):
+        return self.operands[other]
+
+    def _layer(self) -> dict:
+        return toolz.merge(op._layer() for op in self.operands)
+
+    def __dask_output_keys__(self) -> list:
+        return list(flatten(op.__dask_output_keys__() for op in self.operands))
+
+    def __len__(self):
+        return len(self.operands)
+
+    def __iter__(self):
+        return iter(self.operands)
