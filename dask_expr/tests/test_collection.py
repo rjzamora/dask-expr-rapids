@@ -9,6 +9,7 @@ from datetime import timedelta
 import dask
 import numpy as np
 import pytest
+from dask import is_dask_collection
 from dask.dataframe._compat import PANDAS_GE_210
 from dask.dataframe.utils import UNKNOWN_CATEGORIES
 from dask.utils import M
@@ -23,7 +24,8 @@ from dask_expr import (
     to_numeric,
     to_timedelta,
 )
-from dask_expr._expr import Tuple, are_co_aligned
+from dask_expr._collection import new_collection
+from dask_expr._expr import Expr, Tuple, are_co_aligned
 from dask_expr._reductions import Len
 from dask_expr._shuffle import Shuffle
 from dask_expr.datasets import timeseries
@@ -1930,3 +1932,20 @@ def test_axes(df, pdf):
     [assert_eq(d, p) for d, p in zip(df.axes, pdf.axes)]
     assert len(df.x.axes) == len(pdf.x.axes)
     assert_eq(df.x.axes[0], pdf.x.axes[0])
+
+
+def test_dask_collection_controlled_materialization():
+    class NoMaterializationAllowed(Expr):
+        _meta = int
+
+        def _layer(self):
+            raise RuntimeError("Materialization not allowed")
+
+    collection = new_collection(NoMaterializationAllowed())
+    assert is_dask_collection(collection)
+
+    with pytest.raises(RuntimeError, match="Materialization not allowed"):
+        collection.dask
+
+    with pytest.raises(RuntimeError, match="Materialization not allowed"):
+        collection.__dask_graph_factory__().materialize()
