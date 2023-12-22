@@ -880,9 +880,9 @@ def test_persist(pdf, df):
     b = a.persist()
 
     assert_eq(a, b)
-    assert len(a.__dask_graph__()) > len(b.__dask_graph__())
+    assert len(a.dask) > len(b.dask)
 
-    assert len(b.__dask_graph__()) == b.npartitions
+    assert len(b.dask) == b.npartitions
 
     assert_eq(b.y.sum(), (pdf + 2).y.sum())
 
@@ -1116,7 +1116,7 @@ def test_serialization(pdf, df):
 
     part = df.partitions[0].compute()
     assert (
-        len(pickle.dumps(df.__dask_graph__()))
+        len(pickle.dumps(df.__dask_graph_factory__()))
         < 1000 + len(pickle.dumps(part)) * df.npartitions
     )
 
@@ -1188,7 +1188,7 @@ def test_tree_repr(fuse):
 
 def test_simple_graphs(df):
     expr = (df + 1).expr
-    graph = expr.__dask_graph__()
+    graph = expr.materialize()
 
     assert graph[(expr._name, 0)] == (operator.add, (df.expr._name, 0), 1)
 
@@ -1242,7 +1242,7 @@ def test_repartition_divisions(df, opt):
     assert_eq((df + 1)["x"], df2)
 
     # Check partitions
-    for p, part in enumerate(dask.compute(list(df2.index.partitions))[0]):
+    for p, part in enumerate(dask.compute(list(df2.index.partitions))):
         if len(part):
             assert part.min() >= df2.divisions[p]
             assert part.max() < df2.divisions[p + 1]

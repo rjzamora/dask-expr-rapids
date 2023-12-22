@@ -286,7 +286,7 @@ class FrameBase(DaskMethodsMixin, DaskCollection2):
         # cause very unfortunate materializations. Even a mere hasattr(obj,
         # "dask") check already triggers this since it's a property, not even a
         # method.
-        return self.__dask_graph_factory__().materialize()
+        return self.__dask_graph_factory__().lower_completely().materialize()
 
     def finalize_compute(self):
         return new_collection(Repartition(self.expr, 1))
