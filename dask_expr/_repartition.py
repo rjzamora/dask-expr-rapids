@@ -7,13 +7,13 @@ import numpy as np
 import pandas as pd
 from dask.base import tokenize
 from dask.dataframe import methods
-from dask.dataframe.core import split_evenly
+from dask.dataframe.core import _concat, _map_freq_to_period_start, split_evenly
 from dask.dataframe.utils import is_series_like
 from dask.utils import iter_chunks, parse_bytes
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from tlz import unique
 
-from dask_expr._expr import Expr, Filter, Projection
+from dask_expr._expr import Expr, Projection, plain_column_projection
 from dask_expr._reductions import TotalMemoryUsageFrame
 from dask_expr._util import LRU
 
@@ -49,6 +49,18 @@ class Repartition(Expr):
             return x._divisions()
         return self.new_divisions
 
+    @property
+    def npartitions(self):
+        if (
+            "new_partitions" in self._parameters
+            and self.operand("new_partitions") is not None
+        ):
+            new_partitions = self.operand("new_partitions")
+            if isinstance(new_partitions, Callable):
+                return new_partitions(self.frame.npartitions)
+            return new_partitions
+        return super().npartitions
+
     def _lower(self):
         if type(self) != Repartition:
             # This lower logic should not be inherited
@@ -56,6 +68,9 @@ class Repartition(Expr):
         if self.operand("new_partitions") is not None:
             if self.new_partitions < self.frame.npartitions:
                 return RepartitionToFewer(self.frame, self.operand("new_partitions"))
+            elif self.new_partitions == self.frame.npartitions:
+                # Remove if partitions are equal
+                return self.frame
             else:
                 original_divisions = divisions = pd.Series(
                     self.frame.divisions
@@ -106,13 +121,9 @@ class Repartition(Expr):
         else:
             raise NotImplementedError()
 
-    def _combine_similar(self, root: Expr):
-        return self._combine_similar_branches(root, (Filter, Projection))
-
-    def _simplify_up(self, parent):
-        # Reorder with column projection
+    def _simplify_up(self, parent, dependents):
         if isinstance(parent, Projection):
-            return type(self)(self.frame[parent.operand("columns")], *self.operands[1:])
+            return plain_column_projection(self, parent, dependents)
 
     @functools.cached_property
     def new_partitions(self):
@@ -150,7 +161,7 @@ class RepartitionToFewer(Repartition):
         new_partitions_boundaries = self._partitions_boundaries
         return {
             (self._name, i): (
-                methods.concat,
+                _concat,
                 [(self.frame._name, j) for j in range(start, end)],
             )
             for i, (start, end) in enumerate(
@@ -342,6 +353,33 @@ class RepartitionDivisions(Repartition):
                 d[(out2, j - 1)] = (methods.concat, tmp)
             j += 1
         return d
+
+
+class RepartitionFreq(Repartition):
+    _parameters = ["frame", "freq"]
+
+    def _divisions(self):
+        freq = _map_freq_to_period_start(self.freq)
+
+        try:
+            start = self.frame.divisions[0].ceil(freq)
+        except ValueError:
+            start = self.frame.divisions[0]
+        divisions = methods.tolist(
+            pd.date_range(start=start, end=self.frame.divisions[-1], freq=freq)
+        )
+        if not len(divisions):
+            divisions = [self.frame.divisions[0], self.frame.divisions[-1]]
+        else:
+            divisions.append(self.frame.divisions[-1])
+            if divisions[0] != self.frame.divisions[0]:
+                divisions = [self.frame.divisions[0]] + divisions
+        return divisions
+
+    def _lower(self):
+        if not isinstance(self.frame.divisions[0], pd.Timestamp):
+            raise TypeError("Can only repartition on frequency for timeseries")
+        return RepartitionDivisions(self.frame, self._divisions())
 
 
 class RepartitionSize(Repartition):

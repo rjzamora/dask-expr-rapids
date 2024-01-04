@@ -5,7 +5,14 @@ from numbers import Integral
 import pandas as pd
 
 from dask_expr._collection import new_collection
-from dask_expr._expr import Blockwise, Expr, MapOverlap, Projection, make_meta
+from dask_expr._expr import (
+    Blockwise,
+    Expr,
+    MapOverlap,
+    Projection,
+    determine_column_projection,
+    make_meta,
+)
 
 BlockwiseDep = namedtuple(typename="BlockwiseDep", field_names=["iterable"])
 
@@ -72,11 +79,12 @@ class RollingReduction(Expr):
     def kwargs(self):
         return {} if self.operand("kwargs") is None else self.operand("kwargs")
 
-    def _simplify_up(self, parent):
+    def _simplify_up(self, parent, dependents):
         if isinstance(parent, Projection):
             by = self.groupby_kwargs.get("by", []) if self.groupby_kwargs else []
             by_columns = by if not isinstance(by, Expr) else []
-            columns = sorted(set(parent.columns + by_columns))
+            columns = determine_column_projection(self, parent, dependents, by_columns)
+            columns = [col for col in self.frame.columns if col in columns]
             if columns == self.frame.columns:
                 return
             if self.groupby_kwargs is not None:
@@ -204,7 +212,7 @@ class RollingKurt(RollingReduction):
 class RollingAgg(RollingReduction):
     how = "agg"
 
-    def _simplify_up(self, parent):
+    def _simplify_up(self, parent, dependents):
         # Disable optimization in `agg`; function may access other columns
         return
 
@@ -213,14 +221,27 @@ class RollingApply(RollingReduction):
     how = "apply"
 
 
+class RollingCov(RollingReduction):
+    how = "cov"
+
+
 class Rolling:
     """Aggregate using one or more operations
 
     The purpose of this class is to expose an API similar
-    to Pandas' `Rollingr` for dask-expr
+    to Pandas' `Rolling` for dask-expr
     """
 
-    def __init__(self, obj, window, groupby_kwargs=None, groupby_slice=None, **kwargs):
+    def __init__(
+        self,
+        obj,
+        window,
+        groupby_kwargs=None,
+        groupby_slice=None,
+        min_periods=None,
+        center=False,
+        win_type=None,
+    ):
         if obj.divisions[0] is None:
             msg = (
                 "Can only rolling dataframes with known divisions\n"
@@ -230,14 +251,25 @@ class Rolling:
             raise ValueError(msg)
         self.obj = obj
         self.window = window
-        self.kwargs = kwargs
         self.groupby_kwargs = groupby_kwargs
         self.groupby_slice = groupby_slice
+        self.min_periods = min_periods
+        self.center = center
+        self.win_type = win_type
+
+        # Allow pandas to raise if appropriate
+        obj._meta.rolling(window, **self.kwargs)
+
+    @functools.cached_property
+    def kwargs(self):
+        return dict(
+            min_periods=self.min_periods, center=self.center, win_type=self.win_type
+        )
 
     def _single_agg(self, expr_cls, how_args=(), how_kwargs=None):
         return new_collection(
             expr_cls(
-                self.obj.expr,
+                self.obj,
                 self.window,
                 kwargs=self.kwargs,
                 how_args=how_args,
@@ -246,6 +278,9 @@ class Rolling:
                 groupby_slice=self.groupby_slice,
             )
         )
+
+    def cov(self):
+        return self._single_agg(RollingCov)
 
     def apply(self, func, *args, **kwargs):
         return self._single_agg(RollingApply, how_args=(func, *args), how_kwargs=kwargs)
